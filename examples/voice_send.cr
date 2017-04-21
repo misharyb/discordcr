@@ -38,6 +38,9 @@ client.on_message_create do |payload|
   elsif payload.content.starts_with? "!play_dca "
     # Used as:
     # !play_dca <filename>
+    #
+    # Make sure the DCA file you play back is valid according to the spec
+    # (including metadata), otherwise playback will fail.
 
     unless voice_client
       client.create_message(payload.channel_id, "Voice client is nil!")
@@ -50,18 +53,16 @@ client.on_message_create do |payload|
     # The DCAParser class handles parsing of the DCA file. It doesn't do any
     # sending of audio data to Discord itself – that has to be done by
     # VoiceClient.
-    parser = Discord::DCAParser.new(file, strict_metadata: false)
+    parser = Discord::DCAParser.new(file)
 
     # A proper DCA(1) file contains metadata, which is exposed by DCAParser.
     # This metadata may be of interest, so here is some example code that uses
     # it.
-    if parser.metadata
-      metadata = parser.metadata.not_nil!
+    if metadata = parser.metadata
       tool = metadata.dca.tool
       client.create_message(payload.channel_id, "DCA file was created by #{tool.name}, version #{tool.version}.")
 
-      if metadata.info
-        info = metadata.info.not_nil!
+      if info = metadata.info
         client.create_message(payload.channel_id, "Song info: #{info.title} by #{info.artist}.") if info.title && info.artist
       end
     else
@@ -75,27 +76,37 @@ client.on_message_create do |payload|
 
     client.create_message(payload.channel_id, "Playing DCA file `#{filename}`.")
 
-    # The `parse` method reads the frames consecutively and parses them to the
-    # block.
-    parser.parse do |frame|
-      # For smooth audio streams Discord requires one packet every
-      # 20 milliseconds. The `timed_run` method measures the time it takes to
-      # run the block and then sleeps 20 milliseconds minus that time, ensuring
-      # accurate timing.
-      #
-      # When simply reading from DCA, the time it takes to read, process and
-      # send the frame is small enough that `timed_run` doesn't make much of a
-      # difference (in fact, some users report that it actually makes things
-      # worse). If the processing time is not negligibly slow because you're
-      # doing something else than DCA parsing, or because you're reading from a
-      # slow source, or for any other reason, then it is recommended to use
-      # `timed_run`. Otherwise, simply doing something like
-      # `sleep 20.milliseconds` may suffice.
-      Discord::VoiceClient.timed_run do
-        # Perform the actual sending of the frame to Discord.
-        voice_client.not_nil!.play_opus(frame)
-      end
+    # For smooth audio streams Discord requires one packet every
+    # 20 milliseconds. The `every` method measures the time it takes to run the
+    # block and then sleeps 20 milliseconds minus that time before moving on to
+    # the next iteration, ensuring accurate timing.
+    #
+    # When simply reading from DCA, the time it takes to read, process and
+    # send the frame is small enough that `every` doesn't make much of a
+    # difference (in fact, some users report that it actually makes things
+    # worse). If the processing time is not negligibly slow because you're
+    # doing something else than DCA parsing, or because you're reading from a
+    # slow source, or for any other reason, then it is recommended to use
+    # `every`. Otherwise, simply using a loop and `sleep`ing `20.milliseconds`
+    # each time may suffice.
+    Discord.every(20.milliseconds) do
+      frame = parser.next_frame(reuse_buffer: true)
+      break unless frame
+
+      # Perform the actual sending of the frame to Discord.
+      voice_client.not_nil!.play_opus(frame)
     end
+
+    # Alternatively, the above code can be realised as the following:
+    #
+    # parser.parse do |frame|
+    #   Discord.timed_run(20.milliseconds) do
+    #     voice_client.not_nil!.play_opus(frame)
+    #   end
+    # end
+    #
+    # (The `parse` method reads the frames consecutively and passes them to the
+    # block.)
 
     file.close
   end
@@ -106,11 +117,11 @@ end
 # to connect to.
 client.on_voice_server_update do |payload|
   begin
-    voice_client = Discord::VoiceClient.new(payload, client.session.not_nil!, current_user_id.not_nil!)
-    voice_client.not_nil!.on_ready do
+    vc = voice_client = Discord::VoiceClient.new(payload, client.session.not_nil!, current_user_id.not_nil!)
+    vc.on_ready do
       client.create_message(connect_channel_id.not_nil!, "Voice connected.")
     end
-    voice_client.not_nil!.run
+    vc.run
   rescue e
     e.inspect_with_backtrace(STDOUT)
   end

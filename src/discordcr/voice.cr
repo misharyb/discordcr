@@ -90,19 +90,6 @@ module Discord
       @udp.send_audio(buf, @sequence, @time)
     end
 
-    # Utility function that runs the given block and measures the time it takes,
-    # then sleeps the given time (or 20 ms by default) minus that time. This is
-    # useful because (in most cases) voice data should be sent to Discord at a
-    # rate of one frame every 20 ms, and if the processing and sending takes
-    # a certain amount of time, then noticeable choppiness can be heard.
-    def self.timed_run(total_time = 20.milliseconds, &block)
-      t1 = Time.now
-      block.call
-      t2 = Time.now - t1
-
-      sleep total_time - t2
-    end
-
     # Increment sequence and time
     private def increment_packet_metadata
       @sequence += 1
@@ -280,6 +267,32 @@ module Discord
       # we don't want them in the result, so move the slice forward by that many
       # bytes
       c + box_zero_bytes
+    end
+  end
+
+  # Utility function that runs the given block and measures the time it takes,
+  # then sleeps the given time minus that time. This is useful for voice code
+  # because (in most cases) voice data should be sent to Discord at a rate of
+  # one frame every 20 ms, and if the processing and sending takes a certain
+  # amount of time, then noticeable choppiness can be heard.
+  def self.timed_run(total_time : Time::Span)
+    t1 = Time.now
+    yield
+    delta = Time.now - t1
+
+    sleep_time = {total_time - delta, Time::Span.zero}.max
+    sleep sleep_time
+  end
+
+  # Runs the given block every *time_span*. This method takes into account the
+  # execution time for the block to keep the intervals accurate.
+  #
+  # Note that if the block takes longer to execute than the given *time_span*,
+  # there will be no delay: the next iteration follows immediately, with no
+  # attempt to get in sync.
+  def self.every(time_span : Time::Span)
+    loop do |i|
+      timed_run(time_span) { yield }
     end
   end
 end
